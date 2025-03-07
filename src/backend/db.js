@@ -13,24 +13,32 @@ const connectDB = async () => {
     
     console.log('MongoDB connected successfully');
     
-    // Create a simple schema and model for testing
-    const Schema = mongoose.Schema;
-    const dataSchema = new Schema({
-      name: String,
-      value: String,
-      createdAt: {
-        type: Date,
-        default: Date.now
-      }
-    });
-    
-    // Only create the model if it doesn't already exist
-    mongoose.models.Data || mongoose.model('Data', dataSchema);
+    // Initialize schema and indexes
+    await initializeSchema();
     
   } catch (error) {
     console.error('MongoDB connection error:', error.message);
     // Exit process with failure
     process.exit(1);
+  }
+};
+
+// Function to initialize database schema and indexes
+const initializeSchema = async () => {
+  try {
+    // Import Bill model
+    const Bill = require('./models/Bill');
+    
+    // Create indexes for common search fields if they don't exist
+    await Bill.collection.createIndex({ billId: 1 });
+    await Bill.collection.createIndex({ state: 1 });
+    await Bill.collection.createIndex({ isFederal: 1 });
+    await Bill.collection.createIndex({ date: 1 });
+    await Bill.collection.createIndex({ tags: 1 });
+    
+    console.log('MongoDB schema and indexes initialized');
+  } catch (error) {
+    console.error(`Error initializing schema: ${error.message}`);
   }
 };
 

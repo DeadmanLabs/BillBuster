@@ -1,6 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const Bill = require('../models/Bill');
+const fs = require('fs');
+const path = require('path');
 
 // Get all bills
 router.get('/', async (req, res) => {
@@ -29,6 +31,8 @@ router.get('/search', async (req, res) => {
       if (endDate) query.date.$lte = new Date(endDate);
     }
     
+    // Note: We do not allow searching by points data
+    
     const bills = await Bill.find(query);
     res.json(bills);
   } catch (error) {
@@ -44,6 +48,41 @@ router.get('/:id', async (req, res) => {
       return res.status(404).json({ message: 'Bill not found' });
     }
     res.json(bill);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Download a bill file
+router.get('/:id/download/:fileIndex', async (req, res) => {
+  try {
+    const bill = await Bill.findById(req.params.id);
+    if (!bill) {
+      return res.status(404).json({ message: 'Bill not found' });
+    }
+    
+    const fileIndex = parseInt(req.params.fileIndex);
+    if (isNaN(fileIndex) || fileIndex < 0 || fileIndex >= bill.filePath.length) {
+      return res.status(400).json({ message: 'Invalid file index' });
+    }
+    
+    const filePath = bill.filePath[fileIndex];
+    
+    // Check if file exists
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ message: 'File not found on server' });
+    }
+    
+    // Get filename from path
+    const fileName = path.basename(filePath);
+    
+    // Set headers for file download
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.setHeader('Content-Type', 'text/plain');
+    
+    // Create read stream and pipe to response
+    const fileStream = fs.createReadStream(filePath);
+    fileStream.pipe(res);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

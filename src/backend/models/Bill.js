@@ -50,7 +50,11 @@ const billSchema = new mongoose.Schema({
     default: []
   },
   summary: {
-    type: [String],
+    type: String,
+    default: ''
+  },
+  points: {
+    type: [Object],
     default: []
   },
   // Additional metadata

@@ -13,9 +13,15 @@ from dotenv import load_dotenv
 from pymongo import MongoClient
 from pathlib import Path
 
+# Import from our compressor library for bill processing
+try:
+    from compressor import DocumentProcessor
+except ImportError:
+    # If not available, we'll handle this gracefully later
+    DocumentProcessor = None
+
 '''
 Note, Legiscan maxes out at 30k queries per month. Reset on the 1st of each month
-
 '''
 
 # Configure logging
@@ -36,6 +42,7 @@ load_dotenv()
 LEGISCAN_API_KEY = os.getenv('LEGISCAN_API_KEY', 'your_api_key_here')
 BILLS_DIRECTORY = os.getenv('BILLS_DIRECTORY', '/usr/src/app/bills')
 MONGODB_URI = os.getenv('MONGODB_URI', 'mongodb://mongodb:27017/billbuster')
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
 
 # Ensure bills directory exists
 os.makedirs(BILLS_DIRECTORY, exist_ok=True)
@@ -55,17 +62,106 @@ def get_mongodb_client():
     client = MongoClient(MONGODB_URI)
     return client
 
+# Ensure MongoDB schema is initialized
+def ensure_db_schema():
+    """
+    Initialize the MongoDB schema if it doesn't exist.
+    This ensures the collections and indexes are properly set up.
+    """
+    try:
+        client = get_mongodb_client()
+        db = client.billbuster
+        
+        # Check if the bills collection exists, create it if not
+        collections = db.list_collection_names()
+        if 'bills' not in collections:
+            logger.info("Creating bills collection")
+            db.create_collection('bills')
+        
+        # Create index on billId for faster lookups
+        db.bills.create_index('billId')
+        
+        # Create indexes on common search fields
+        db.bills.create_index('state')
+        db.bills.create_index('isFederal')
+        db.bills.create_index('date')
+        db.bills.create_index('tags')
+        
+        logger.info("MongoDB schema initialized")
+        client.close()
+    except Exception as e:
+        logger.error(f"Error ensuring database schema: {str(e)}")
+
 async def process_bill_async(bill_path):
     """
     Asynchronous function to process a downloaded bill
     """
     try:
         logger.info(f"Processing bill asynchronously: {bill_path}")
+        
+        # Check if we have the compressor and OpenAI API key
+        if DocumentProcessor and OPENAI_API_KEY:
+            try:
+                logger.info(f"Using compressor to analyze bill content")
+                processor = DocumentProcessor(
+                    openai_api_key=OPENAI_API_KEY,
+                    model_name="gpt-4-turbo", 
+                    chunk_size=4000,
+                    chunk_overlap=500
+                )
+                
+                # Process the document
+                result, stats = processor.process_document(bill_path)
+                
+                # Get MongoDB client
+                client = get_mongodb_client()
+                db = client.billbuster
+                bills_collection = db.bills
+                
+                # Find the bill in the database by file path
+                bill_query = {"filePath": {"$in": [bill_path]}}
+                bill = bills_collection.find_one(bill_query)
+                
+                if bill:
+                    # Update the bill with analysis results
+                    # Join summary paragraphs into a single string, since the model expects a string, not an array
+                    summary_text = " ".join(result["summary"]) if isinstance(result["summary"], list) else result["summary"]
+                    
+                    update_data = {
+                        "summary": summary_text,
+                        "tags": result["tags"],
+                        "points": result["points"]
+                    }
+                    
+                    bills_collection.update_one(
+                        {"_id": bill["_id"]},
+                        {"$set": update_data}
+                    )
+                    
+                    logger.info(f"Updated bill {bill['_id']} with analysis results")
+                else:
+                    logger.warning(f"Bill not found in database for file path: {bill_path}")
+                
+                client.close()
+                
+                # Save a copy of the analysis results
+                output_path = bill_path + '.analysis.json'
+                with open(output_path, 'w', encoding='utf-8') as f:
+                    json.dump(result, f, indent=2)
+                
+                logger.info(f"Analysis results saved to: {output_path}")
+                
+            except Exception as e:
+                logger.error(f"Error using compressor to process bill: {str(e)}")
+        else:
+            # If compressor not available, log and continue
+            if not DocumentProcessor:
+                logger.warning("Compressor library not available for bill analysis")
+            if not OPENAI_API_KEY:
+                logger.warning("OpenAI API key not set, cannot analyze bill content")
+                
         # Simulate some async processing
         await asyncio.sleep(1)
-        
-        # Here you would implement the actual bill processing logic
-        # For example, parsing the bill text, extracting information, etc.
         
         logger.info(f"Finished processing bill: {bill_path}")
         return {"status": "success", "bill_path": bill_path}
@@ -223,7 +319,8 @@ def check_for_new_bills(state):
                                     'title': bill_info.get('title', ''),
                                     'citation': [],  # Will be populated later with analysis
                                     'tags': [],      # Will be populated later with analysis
-                                    'summary': []    # Will be populated later with analysis
+                                    'summary': '',   # Will be populated later with analysis
+                                    'points': []     # Will be populated later with analysis
                                 }
                                 
                                 bills_collection.insert_one(bill_record)
@@ -266,6 +363,9 @@ def main():
     Main function to schedule and run the API polling
     """
     logger.info("LegiScan API Poller service started")
+    
+    # Ensure the database schema is properly set up
+    ensure_db_schema()
     
     # Run once at startup
     poll_legiscan_api()
