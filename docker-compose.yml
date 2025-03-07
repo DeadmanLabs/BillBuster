@@ -1,0 +1,62 @@
+version: '3.8'
+
+services:
+  # Node.js backend service
+  backend:
+    build: ./src/backend
+    container_name: billbuster-backend
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+      - MONGODB_URI=mongodb://mongodb:27017/billbuster
+    volumes:
+      - ./src/backend:/usr/src/app
+      - /usr/src/app/node_modules
+    depends_on:
+      - mongodb
+    restart: unless-stopped
+    networks:
+      - billbuster-network
+
+  # MongoDB service
+  mongodb:
+    image: mongo:6.0
+    container_name: billbuster-mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb-data:/data/db
+    environment:
+      - MONGO_INITDB_DATABASE=billbuster
+    restart: unless-stopped
+    networks:
+      - billbuster-network
+
+  # Python API poller service
+  api-poller:
+    build: ./src/python
+    container_name: billbuster-api-poller
+    environment:
+      - MONGODB_URI=mongodb://mongodb:27017/billbuster
+      - LEGISCAN_API_KEY=${LEGISCAN_API_KEY:-your_api_key_here}
+      - BILLS_DIRECTORY=/usr/src/app/bills
+    volumes:
+      - ./src/python:/usr/src/app
+      - bills-data:/usr/src/app/bills
+    depends_on:
+      - mongodb
+    restart: unless-stopped
+    networks:
+      - billbuster-network
+
+networks:
+  billbuster-network:
+    driver: bridge
+
+volumes:
+  mongodb-data:
+    driver: local
+  bills-data:
+    driver: local
